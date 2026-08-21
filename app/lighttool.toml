@@ -1,0 +1,14 @@
+[tool]
+id = "com.lightphone.passkey"
+label = "Passkey"
+versionCode = 1
+versionName = "0.1.0"
+permissions = ["android.permission.CAMERA", "android.permission.INTERNET"]
+capabilities = []
+# Single-module build: the caBLE session + authenticator (the former :app
+# hybrid flow) is a library merged into this APK, which hosts its own
+# LightSdkService and binds to itself — serverPackage is the tool's own id,
+# so no separate companion APK to install. The BLE/UV permissions the session
+# needs live in the :server library manifest.
+serverPackage = "com.lightphone.passkey"
+orientation = "portrait"

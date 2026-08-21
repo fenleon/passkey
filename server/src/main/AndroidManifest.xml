@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Tunnel websocket (the caBLE relay). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- UV via BiometricPrompt (fingerprint or device credential). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Truck 1 hybrid: camera for the tool's QR scanner (the tool's
+         generated manifest also declares it from lighttool.toml — the merger
+         dedupes), BLE for the EID advert. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Merged into the tool APK: the tool's generated manifest provides the
+         application class, label, and launcher; this library contributes only
+         components. -->
+    <application>
+
+        <!-- Shows the BiometricPrompt for a CTAP frame that requires UV
+             (launched by UvPrompt from the session's suspended gate); reports
+             the result and finishes. -->
+        <activity
+            android:name=".UvActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- Wires the embedded LightSdkServer (settings relay, cert check,
+             passkey methods, device keys) at app start, before the tool's
+             first binder call. -->
+        <provider
+            android:name=".ServerBootstrapProvider"
+            android:authorities="com.lightphone.passkey.server.bootstrap"
+            android:exported="false" />
+    </application>
+
+</manifest>
