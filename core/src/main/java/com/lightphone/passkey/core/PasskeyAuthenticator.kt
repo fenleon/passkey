@@ -139,7 +139,7 @@ class PasskeyAuthenticator(
         val signature = signer.sign()
         store.bumpCounter(credential.credentialId)
         return AssertCtapResult(
-            credential.credentialId, authData, signature, credential.userHandle, needUv,
+            credential.credentialId, authData, signature, credential.userHandle, credential.userName, needUv,
         )
     }
 

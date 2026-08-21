@@ -37,8 +37,13 @@ class Noise constructor(protocolName: String) {
     private var nonce = 0
 
     init {
-        // ck = h = protocol name (Chromium zero-fills then copy_prefix).
-        ck = protocolName.toByteArray(Charsets.UTF_8)
+        // ck = h = protocol name zero-padded to 32 bytes (Chromium noise.cc
+        // `Init`: chaining_key_.fill(0) then copy_prefix_from(name) — all three
+        // caBLE names are < 32 bytes, so the pad byte is part of the state;
+        // omitting it diverges every MixHash from Chrome's).
+        val name = protocolName.toByteArray(Charsets.UTF_8)
+        require(name.size <= 32) { "protocol name too long" }
+        ck = ByteArray(32).also { name.copyInto(it) }
         h = ck.copyOf()
     }
 

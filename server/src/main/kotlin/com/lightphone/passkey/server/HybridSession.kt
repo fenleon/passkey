@@ -85,11 +85,13 @@ class HybridSession(
                 log("routing=${routing.toHex()} advert=${advert.toHex()}")
                 startBleAdvert(advert)
                 psk = derive(secret, plaintextEid, DerivedValueType.PSK, 32)
+                log("psk=${psk!!.toHex()} identity=${qr.peerIdentity.toHex()}")
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
                 val psk = psk ?: run { log("FAIL: no psk"); return }
                 if (!handshakeDone) {
+                    log("hs msg ${bytes.size}B: ${bytes.hex()}")
                     val result = respondToHandshake(psk, null, qr.peerIdentity, bytes.toByteArray())
                     if (result == null) {
                         log("FAIL: handshake rejected")
@@ -158,7 +160,9 @@ class HybridSession(
                 when (command) {
                     Ctap.CMD_GET_INFO -> {
                         log("getInfo request — responding")
-                        ws.send((crypter!!.encrypt(byteArrayOf(Ctap.CTAP_OK.toByte()) + Ctap.getInfo())).toByteString())
+                        ws.send((crypter!!.encrypt(
+                            byteArrayOf(Ctap.MSG_CTAP.toByte(), Ctap.CTAP_OK.toByte()) + Ctap.getInfo()
+                        )).toByteString())
                     }
                     Ctap.CMD_MAKE_CREDENTIAL -> scope.launch { respondMakeCredential(ws, body) }
                     Ctap.CMD_GET_ASSERTION -> scope.launch { respondGetAssertion(ws, body) }
@@ -176,6 +180,7 @@ class HybridSession(
     // real-Chrome gate. See the README's protocol notes.)
     private suspend fun respondMakeCredential(ws: WebSocket, body: ByteArray) {
         log("MC request (${body.size} bytes)")
+        log("MC hex: ${body.toHex()}")
         val req = Ctap2.decodeMakeCredential(body)
         if (req == null) {
             log("MC decode failed")
@@ -206,6 +211,7 @@ class HybridSession(
     }
 
     private suspend fun respondGetAssertion(ws: WebSocket, body: ByteArray) {
+        log("GA req hex: ${body.toHex()}")
         val req = Ctap2.decodeGetAssertion(body)
         if (req == null) return sendCtapError(ws, Ctap.ERR_INVALID_CBOR)
         try {
@@ -217,10 +223,11 @@ class HybridSession(
                     requireUserVerification = req.requireUserVerification,
                 )
             )
-            sendCtap(
-                ws,
-                Ctap2.encodeGetAssertionResponse(res.credentialId, res.authData, res.signature, res.userHandle),
+            val response = Ctap2.encodeGetAssertionResponse(
+                res.credentialId, res.authData, res.signature, res.userHandle, res.userName,
             )
+            log("GA resp hex: ${response.toHex()}")
+            sendCtap(ws, response)
             log("GetAssertion OK — cred ${res.credentialId.toHex().take(8)}… uv=${res.uv}")
         } catch (e: CtapError) {
             log("GetAssertion rejected: 0x%02x".format(e.status))
@@ -232,11 +239,15 @@ class HybridSession(
     }
 
     private fun sendCtap(ws: WebSocket, cbor: ByteArray) {
-        ws.send(crypter!!.encrypt(byteArrayOf(Ctap.CTAP_OK.toByte()) + cbor).toByteString())
+        // [MessageType kCTAP][CTAP2 status 0x00][cbor] — Chromium's tunnel
+        // device reads the first plaintext byte as the message type; a reply
+        // without the 0x01 prefix parses as kShutdown ("invalid shutdown
+        // frame", seen against real Chrome 151 2026-08-21).
+        ws.send(crypter!!.encrypt(byteArrayOf(Ctap.MSG_CTAP.toByte(), Ctap.CTAP_OK.toByte()) + cbor).toByteString())
     }
 
     private fun sendCtapError(ws: WebSocket, status: Int) {
-        ws.send(crypter!!.encrypt(byteArrayOf(status.toByte())).toByteString())
+        ws.send(crypter!!.encrypt(byteArrayOf(Ctap.MSG_CTAP.toByte(), status.toByte())).toByteString())
     }
 
     /** Best-effort EID advert; logs and continues when BLE is unavailable. */

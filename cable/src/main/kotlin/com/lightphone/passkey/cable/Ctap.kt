@@ -12,6 +12,11 @@ package com.lightphone.passkey.cable
  * getInfo request; answering one anyway makes the protocol loop testable.
  */
 object Ctap {
+    // caBLE v2 message types (Chromium cablev2::MessageType) — every
+    // post-handshake frame carries the type byte as the first plaintext byte.
+    const val MSG_SHUTDOWN = 0
+    const val MSG_CTAP = 1
+
     const val CMD_MAKE_CREDENTIAL = 0x01
     const val CMD_GET_ASSERTION = 0x02
     const val CMD_GET_INFO = 0x04

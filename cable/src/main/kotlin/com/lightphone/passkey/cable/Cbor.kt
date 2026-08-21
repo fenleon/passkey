@@ -63,6 +63,13 @@ object CableCbor {
      * Chromium's cbor::Value::MapValue is a std::map: integer keys sort before
      * text keys, each group lexicographically. Matches the ordering of the QR
      * and getInfo maps a real browser/authenticator encodes.
+     *
+     * The CBOR wire format additionally requires canonical map-key ordering
+     * (RFC 8949 §4.2.1): keys sorted by encoded byte length, then byte-wise
+     * lexical order — Chromium's cbor::Reader enforces it ("Map keys must be
+     * strictly monotonically increasing…"). Text keys must therefore sort by
+     * length first (e.g. "id"(2) before "name"(4) before "displayName"(11)),
+     * NOT plain lexicographic order.
      */
     private fun sortedEntries(map: Map<*, *>): List<Map.Entry<*, *>> =
         map.entries.sortedWith(Comparator { a, b ->
@@ -72,6 +79,11 @@ object CableCbor {
                 ka is Long && kb is Long -> ka.compareTo(kb)
                 ka is Long -> -1
                 kb is Long -> 1
+                ka is String && kb is String -> {
+                    val ba = ka.toByteArray(Charsets.UTF_8)
+                    val bb = kb.toByteArray(Charsets.UTF_8)
+                    if (ba.size != bb.size) ba.size.compareTo(bb.size) else ka.compareTo(kb)
+                }
                 else -> ka.toString().compareTo(kb.toString())
             }
         })

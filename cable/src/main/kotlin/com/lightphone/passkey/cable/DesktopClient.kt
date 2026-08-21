@@ -88,8 +88,9 @@ fun main(args: Array<String>) {
     val reply = crypter.decrypt(ws.readBinary())
     check(reply != null, "getInfo reply decrypts")
     val reply2 = reply!!
-    check(reply2.size > 1 && reply2[0].toInt() == Ctap.CTAP_OK, "getInfo reply status OK (0x00)")
-    validateGetInfo(reply2.copyOfRange(1, reply2.size), ::check)
+    check(reply2.size > 2 && reply2[0].toInt() == Ctap.MSG_CTAP && reply2[1].toInt() == Ctap.CTAP_OK,
+        "getInfo reply type kCTAP + status OK (0x00)")
+    validateGetInfo(reply2.copyOfRange(2, reply2.size), ::check)
     println("getInfo reply OK")
 
     // 6. MakeCredential ceremony (the "webauthn.create" side).
@@ -98,19 +99,20 @@ fun main(args: Array<String>) {
     val mcClientDataHash = sha256(mcClientData.toByteArray())
     val mcReq = CableCbor.encode(
         mapOf<Any, Any?>(
-            1L to mapOf<Any, Any?>(1L to "example.com", 2L to "Example"),
-            2L to mapOf<Any, Any?>(1L to byteArrayOf(0x01, 0x02, 0x03), 2L to "user"),
-            3L to mcClientDataHash,
-            4L to listOf(mapOf<Any, Any?>(1L to -7, 2L to "public-key")),
+            1L to mcClientDataHash,
+            2L to mapOf<Any, Any?>("id" to "example.com", "name" to "Example"),
+            3L to mapOf<Any, Any?>("id" to byteArrayOf(0x01, 0x02, 0x03), "name" to "user"),
+            4L to listOf(mapOf<Any, Any?>("alg" to -7, "type" to "public-key")),
             7L to mapOf<Any, Any?>("uv" to uv),
         )
     )
     ws.sendBinary(crypter.encrypt(byteArrayOf(0x01, Ctap.CMD_MAKE_CREDENTIAL.toByte()) + mcReq))
     val mcReply = crypter.decrypt(ws.readBinary())
     check(mcReply != null, "MC reply decrypts")
-    val mcMap = CableCbor.decode(mcReply!!.copyOfRange(1, mcReply.size)) as? Map<*, *>
-    check(mcReply.isNotEmpty() && (mcReply[0].toInt() and 0xff) == Ctap.CTAP_OK && mcMap != null,
-        "MC reply status OK (0x00) + decodes as a map")
+    val mcMap = CableCbor.decode(mcReply!!.copyOfRange(2, mcReply.size)) as? Map<*, *>
+    check(mcReply.isNotEmpty() && (mcReply[0].toInt() and 0xff) == Ctap.MSG_CTAP &&
+        (mcReply[1].toInt() and 0xff) == Ctap.CTAP_OK && mcMap != null,
+        "MC reply type kCTAP + status OK (0x00) + decodes as a map")
     val mcMap2 = mcMap!!
     check(mcMap2[1L] == "none", "MC fmt none")
     check((mcMap2[3L] as? Map<*, *>)?.isEmpty() == true, "MC attStmt empty")
@@ -136,20 +138,21 @@ fun main(args: Array<String>) {
         mapOf<Any, Any?>(
             1L to "example.com",
             2L to gaClientDataHash,
-            3L to listOf(mapOf<Any, Any?>(1L to regParsed2.credentialId!!)),
+            3L to listOf(mapOf<Any, Any?>("id" to regParsed2.credentialId!!, "type" to "public-key")),
             5L to mapOf<Any, Any?>("uv" to uv),
         )
     )
     ws.sendBinary(crypter.encrypt(byteArrayOf(0x01, Ctap.CMD_GET_ASSERTION.toByte()) + gaReq))
     val gaReply = crypter.decrypt(ws.readBinary())
     check(gaReply != null, "GA reply decrypts")
-    val gaMap = CableCbor.decode(gaReply!!.copyOfRange(1, gaReply.size)) as? Map<*, *>
-    check(gaReply.isNotEmpty() && (gaReply[0].toInt() and 0xff) == Ctap.CTAP_OK && gaMap != null,
-        "GA reply status OK (0x00) + decodes as a map")
+    val gaMap = CableCbor.decode(gaReply!!.copyOfRange(2, gaReply.size)) as? Map<*, *>
+    check(gaReply.isNotEmpty() && (gaReply[0].toInt() and 0xff) == Ctap.MSG_CTAP &&
+        (gaReply[1].toInt() and 0xff) == Ctap.CTAP_OK && gaMap != null,
+        "GA reply type kCTAP + status OK (0x00) + decodes as a map")
     val gaMap2 = gaMap!!
     val gaCred = gaMap2[1L] as? Map<*, *>
-    check(gaCred != null && (gaCred[1L] as? ByteArray)?.contentEquals(regParsed2.credentialId) == true &&
-        gaCred[2L] == "public-key", "GA credential id matches registered")
+    check(gaCred != null && (gaCred["id"] as? ByteArray)?.contentEquals(regParsed2.credentialId) == true &&
+        gaCred["type"] == "public-key", "GA credential id matches registered")
     val assertAuthData = gaMap2[2L] as? ByteArray
     val signature = gaMap2[3L] as? ByteArray
     val userHandle = (gaMap2[4L] as? Map<*, *>)?.get(1L) as? ByteArray
@@ -164,7 +167,8 @@ fun main(args: Array<String>) {
     val verifier = Signature.getInstance("SHA256withECDSA")
     verifier.initVerify(pubKey)
     verifier.update(assertAuthData + gaClientDataHash)
-    check(verifier.verify(signature!!), "GA ECDSA signature verifies over authData ‖ clientDataHash")
+    check(verifier.verify(signature!!),
+        "GA ECDSA signature verifies over authData ‖ clientDataHash")
     println("GetAssertion OK — signature verified (counter=${gaParsed2.signCount})")
 
     // 8. Shutdown and close.

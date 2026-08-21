@@ -32,6 +32,7 @@ data class AssertCtapResult(
     val authData: ByteArray,
     val signature: ByteArray,
     val userHandle: ByteArray,
+    val userName: String,
     val uv: Boolean,
 )
 

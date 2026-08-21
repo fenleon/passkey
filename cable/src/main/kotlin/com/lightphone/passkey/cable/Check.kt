@@ -138,6 +138,25 @@ fun main() {
             "KN desktop→phone message")
     }
 
+    // --- real-Chrome interop vector (captured 2026-08-21, LP3 ↔ Chrome 151) ---
+    // Chrome's KNpsk0 init message, decrypted with the psk + identity derived
+    // from the same session's QR. This is the external anchor the handshake
+    // tests lacked: before the zero-padding fix, the protocol name was hashed
+    // as 31 bytes instead of Chromium's 32 (name ‖ 0x00), so every MixHash
+    // diverged and Chrome's real handshake was rejected ("FAIL: handshake
+    // rejected" on the LP3, 3×). The decrypt must succeed now.
+    fun hex(s: String) = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    val chromePsk = hex("dcf1ae69cd391ead2deec8600d12c6be9a34e7c8c6b266dfab4dd9ee1f802429")
+    val chromeIdentity = hex("04ad5b852256d893f76aa2f68a2f5fc960e762c926ff30c9cc3bc214fdc4d3fcc8c013c5f072404902fc5795ef271f886122070c287b2cd5f6058722c71fc9da3f")
+    val chromeMsg = hex("046dfc11b426d36306c33d7e60224f4580db5760100677c69ba453541d04a73d10cde4c3ce795d26a0b11376b0deb0a41d5ffb05f80da2dc9f092c35b9c1b9f801d3e999d8f74fd98b950f077e7da6ed06")
+    check(chromeMsg.size == 81 && chromeMsg[0].toInt() == 0x04, "chrome vector is 65B point + 16B tag")
+    val chromeResp = respondToHandshake(chromePsk, null, chromeIdentity, chromeMsg)
+    check(chromeResp != null, "real Chrome 151 KNpsk0 init decrypts (32B padded protocol name)")
+    val (chromeResult, chromeResponse) = chromeResp!!
+    check(chromeResponse.size == 81, "chrome responder response is 65B point + 16B tag")
+    check(chromeResult.crypter.encrypt(byteArrayOf(0x01, 0x04, 0x02)).size == 48,
+        "chrome vector crypter encrypts (32B pad + 16B GCM tag)")
+
     // --- tunnel server domains (Chromium TunnelServerURLs vectors) ---
     check(TunnelServer.decodeDomain(0) == "cable.ua5v.com", "assigned domain 0")
     check(TunnelServer.decodeDomain(266) == "cable.wufkweyy3uaxb.com", "hashed domain 266")
@@ -205,10 +224,10 @@ fun main() {
     val mc = Ctap2.decodeMakeCredential(
         CableCbor.encode(
             mapOf<Any, Any?>(
-                1L to mapOf<Any, Any?>(1L to "example.com", 2L to "Example"),
-                2L to mapOf<Any, Any?>(1L to byteArrayOf(0x01, 0x02), 2L to "alice"),
-                3L to cdh,
-                4L to listOf(mapOf<Any, Any?>(1L to -7, 2L to "public-key")),
+                1L to cdh,
+                2L to mapOf<Any, Any?>("id" to "example.com", "name" to "Example"),
+                3L to mapOf<Any, Any?>("id" to byteArrayOf(0x01, 0x02), "name" to "alice"),
+                4L to listOf(mapOf<Any, Any?>("alg" to -7, "type" to "public-key")),
             )
         )
     )
@@ -224,22 +243,22 @@ fun main() {
         Ctap2.decodeMakeCredential(
             CableCbor.encode(
                 mapOf<Any, Any?>(
-                    1L to mapOf<Any, Any?>(1L to "example.com"),
-                    2L to mapOf<Any, Any?>(1L to byteArrayOf(0x01)),
-                    3L to cdh,
-                    4L to listOf(mapOf<Any, Any?>(1L to -7, 2L to "public-key")),
-                    5L to listOf(mapOf<Any, Any?>(1L to byteArrayOf(9, 9, 9))),
+                    1L to cdh,
+                    2L to mapOf<Any, Any?>("id" to "example.com"),
+                    3L to mapOf<Any, Any?>("id" to byteArrayOf(0x01)),
+                    4L to listOf(mapOf<Any, Any?>("alg" to -7, "type" to "public-key")),
+                    5L to listOf(mapOf<Any, Any?>("id" to byteArrayOf(9, 9, 9))),
                     7L to mapOf<Any, Any?>("uv" to false),
                 )
             )
         )!!.let { it.excludeCredentialIds.single().contentEquals(byteArrayOf(9, 9, 9)) && !it.requireUserVerification },
         "MC exclude + uv:false"
     )
-    check(Ctap2.decodeMakeCredential(CableCbor.encode(mapOf<Any, Any?>(1L to mapOf<Any, Any?>(1L to "x")))) == null,
+    check(Ctap2.decodeMakeCredential(CableCbor.encode(mapOf<Any, Any?>(2L to mapOf<Any, Any?>("id" to "x")))) == null,
         "MC rejects missing clientDataHash")
     check(
         Ctap2.decodeMakeCredential(
-            CableCbor.encode(mapOf<Any, Any?>(1L to mapOf<Any, Any?>(1L to "x"), 2L to mapOf<Any, Any?>(1L to byteArrayOf(1)), 3L to ByteArray(16)))
+            CableCbor.encode(mapOf<Any, Any?>(1L to ByteArray(16), 2L to mapOf<Any, Any?>("id" to "x"), 3L to mapOf<Any, Any?>("id" to byteArrayOf(1))))
         ) == null,
         "MC rejects short clientDataHash"
     )
@@ -250,7 +269,7 @@ fun main() {
             mapOf<Any, Any?>(
                 1L to "example.com",
                 2L to cdh,
-                3L to listOf(mapOf<Any, Any?>(1L to byteArrayOf(4, 5, 6))),
+                3L to listOf(mapOf<Any, Any?>("id" to byteArrayOf(4, 5, 6))),
             )
         )
     )
@@ -267,16 +286,34 @@ fun main() {
     check((mcResp[2L] as? ByteArray)?.contentEquals(byteArrayOf(4, 5, 6)) == true, "MC response authData")
     check(mcResp[3L] is Map<*, *> && (mcResp[3L] as Map<*, *>).isEmpty(), "MC response attStmt {}")
     val gaResp = CableCbor.decode(
-        Ctap2.encodeGetAssertionResponse(byteArrayOf(7, 8), byteArrayOf(9, 10), byteArrayOf(11, 12), byteArrayOf(13), 1)
+        Ctap2.encodeGetAssertionResponse(byteArrayOf(7, 8), byteArrayOf(9, 10), byteArrayOf(11, 12), byteArrayOf(13), "user", 1)
     ) as Map<*, *>
     val gaCred = gaResp[1L] as? Map<*, *>
-    check(gaCred != null && (gaCred!![1L] as? ByteArray)?.contentEquals(byteArrayOf(7, 8)) == true &&
-        gaCred[2L] == "public-key", "GA response credential")
+    check(gaCred != null && (gaCred!!["id"] as? ByteArray)?.contentEquals(byteArrayOf(7, 8)) == true &&
+        gaCred["type"] == "public-key", "GA response credential")
     check((gaResp[2L] as? ByteArray)?.contentEquals(byteArrayOf(9, 10)) == true, "GA response authData")
     check((gaResp[3L] as? ByteArray)?.contentEquals(byteArrayOf(11, 12)) == true, "GA response signature")
-    check((gaResp[4L] as? Map<*, *>)?.get(1L)?.let { (it as ByteArray).contentEquals(byteArrayOf(13)) } == true,
-        "GA response userHandle")
+    check((gaResp[4L] as? Map<*, *>)?.get("id")?.let { (it as ByteArray).contentEquals(byteArrayOf(13)) } == true &&
+        (gaResp[4L] as? Map<*, *>)?.get("name") == "user", "GA response user entity")
     check(gaResp[5L] == 1L, "GA response count")
+
+    // Canonical map-key order (RFC 8949 §4.2.1) — Chromium's cbor::Reader
+    // rejects out-of-order text keys ("Map keys must be strictly monotonically
+    // increasing…"). The user entity keys must encode "id"(2B), "name"(4B),
+    // "displayName"(11B) — NOT lexicographic (displayName first), which real
+    // Chrome 151 rejected with a CBOR parse error (2026-08-21).
+    val userBytes = CableCbor.encode(linkedMapOf<Any, Any?>("displayName" to "x", "id" to ByteArray(1), "name" to "y"))
+    fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) if (haystack[i + j] != needle[j]) continue@outer
+            return i
+        }
+        return -1
+    }
+    val idAt = indexOf(userBytes, byteArrayOf(0x62, 'i'.code.toByte(), 'd'.code.toByte()))
+    val nameAt = indexOf(userBytes, byteArrayOf(0x64, 'n'.code.toByte(), 'a'.code.toByte()))
+    val dnAt = indexOf(userBytes, byteArrayOf(0x6b, 'd'.code.toByte()))
+    check(idAt in 0 until nameAt && nameAt in 0 until dnAt, "user entity keys canonical (id < name < displayName)")
 
     // authData parser: assertion (no AT) and registration (AT + attested data).
     val rpIdHash = sha256("example.com".toByteArray())
@@ -295,6 +332,30 @@ fun main() {
     check(Ctap2.parseAuthData(ByteArray(36)) == null, "authData rejects short input")
     val (x, y) = Ctap2.parseCoseEc2(coseKey)!!
     check(x.contentEquals(ByteArray(32) { 1 }) && y.contentEquals(ByteArray(32) { 2 }), "COSE EC2 parse")
+
+    // --- real-Chrome MC vector (captured 2026-08-21, LP3 ↔ Chrome 151) ---
+    // Chrome's 219-byte MakeCredential: 1=clientDataHash, 2=rp, 3=user,
+    // 4=params, 7=options — text keys inside. Before the layout fix our codec
+    // read 1=rp/2=user/3=cdh with int keys and rejected it ("MC decode
+    // failed"), stranding the ceremony after the (now fixed) handshake.
+    val chromeMc = Ctap2.decodeMakeCredential(hex(
+        "a50158202952abedf675411d596e250eb7fcfee404c97498822cde6a5b7beb5e405936ca" +
+        "02a26269646b776562617574686e2e696f646e616d656b776562617574686e2e696f" +
+        "03a362696456776562617574686e696f2d6c70332d696e7465726f70646e616d656b6c70332d696e7465726f70" +
+        "6b646973706c61794e616d656b6c70332d696e7465726f70" +
+        "0483a263616c672764747970656a7075626c69632d6b6579a263616c672664747970656a7075626c69632d6b6579" +
+        "a263616c6739010064747970656a7075626c69632d6b6579" +
+        "07a262726bf5627576f5"
+    ))
+    check(chromeMc != null, "real Chrome MC decodes")
+    val chromeMc2 = chromeMc!!
+    check(chromeMc2.rpId == "webauthn.io", "chrome MC rpId")
+    check(chromeMc2.clientDataHash.contentEquals(hex("2952abedf675411d596e250eb7fcfee404c97498822cde6a5b7beb5e405936ca")),
+        "chrome MC clientDataHash")
+    check(chromeMc2.userId.contentEquals("webauthnio-lp3-interop".toByteArray()), "chrome MC userId")
+    check(chromeMc2.algorithms == listOf(-8, -7, -257), "chrome MC algorithms (EdDSA, ES256, RS256)")
+    check(chromeMc2.requireUserVerification, "chrome MC uv:true (hybrid requests UV)")
+    check(chromeMc2.excludeCredentialIds.isEmpty(), "chrome MC no exclude")
 
     println("OK — $checks checks passed (caBLE v2 QR + EID + Noise KN/NK + Crypter + CTAP2)")
 }
