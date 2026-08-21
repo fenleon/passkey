@@ -1,12 +1,7 @@
-# passkey — LP3 passkey authenticator (LightOS tool, caBLE hybrid)
+# Passkey — a WebAuthn authenticator core for the Light Phone 3, in Kotlin. (LightOS tool, caBLE hybrid)
 
-WebAuthn authenticator core for the Light Phone 3, in Kotlin.
-**Truck 1 (caBLE hybrid) chosen 2026-08-21** — the phase-0 probes vetoed
-Truck 2 (USB-HID): it needs root (locked bootloader, no su).
+Very much a WIP - at this point the blocker is utilising the fingerprint, which requires a working PIN code, neither of which the LP3 currently supports.
 
-**Status: protocol + ceremony done and verified end-to-end, including real
-Chrome on the real LP3. Sole remaining blocker: UV on the LP3** (needs a
-LightOS-native lock — see Status).
 
 ## Status
 
@@ -14,10 +9,7 @@ LightOS-native lock — see Status).
 
 - caBLE v2 core (`:cable`), authenticator (`:core`), and the LightOS tool
   with the companion merged into one APK (`:app`/`:server`, toolbox-launched).
-- **Real-Chrome interop on the LP3 through the live relay (2026-08-22):**
-  webauthn.io register ("Success! Now try to authenticate…") and login
-  ("You're logged in!") with UV (temporary lock PIN). The interop gate found
-  and fixed four wire bugs (see Protocol facts).
+- **Real-Chrome interop on the LP3 through the live relay
 - `:cable:run` (1178 asserts, incl. real-Chrome regression vectors);
   DesktopClient ceremonies (40 checks, uv=false and uv=true); on-device LP3
   ceremonies (40 checks each, real BLE advert).
