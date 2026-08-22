@@ -40,7 +40,8 @@ object Ctap2 {
     data class GetAssertionRequest(
         val rpId: String,
         val clientDataHash: ByteArray,
-        val allowCredentialIds: List<ByteArray>,
+        /** Null when the request carries no allowList = match every resident key for the RP. */
+        val allowCredentialIds: List<ByteArray>?,
         val requireUserVerification: Boolean,
     )
 
@@ -78,7 +79,10 @@ object Ctap2 {
         val rpId = m[1L] as? String ?: return null
         val cdh = m[2L] as? ByteArray ?: return null
         if (cdh.size != 32) return null
-        val allow = (m[3L] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.mapNotNull { it["id"] as? ByteArray }.orEmpty()
+        // Absent allowList stays null (match all resident keys for the RP —
+        // the account-picker path); a present-but-empty list is a real
+        // "nothing allowed" and decodes as empty.
+        val allow = (m[3L] as? List<*>)?.mapNotNull { it as? Map<*, *> }?.mapNotNull { it["id"] as? ByteArray }
         val uv = (m[5L] as? Map<*, *>)?.get("uv") as? Boolean ?: true
         return GetAssertionRequest(rpId, cdh, allow, uv)
     }

@@ -20,6 +20,20 @@ class PasskeyAuthenticator(
      */
     private val uvGate: suspend (title: String, subtitle: String, crypto: BiometricPrompt.CryptoObject?) -> Boolean =
         { _, _, _ -> false },
+    /**
+     * Account picker: called when a GetAssertion matches more than one
+     * credential for the RP (resident keys, no allowList). Returns the
+     * credential to sign with, or null to cancel the assertion. Defaults to
+     * the first match (single-credential loopback/tests).
+     */
+    private val accountPicker: suspend (rpId: String, candidates: List<Credential>) -> Credential? =
+        { _, candidates -> candidates.firstOrNull() },
+    /**
+     * Whether user verification can work on this device (a secure lock
+     * exists). A uv-required request when this is false raises
+     * [UvUnavailableException] instead of failing cryptographically.
+     */
+    private val uvAvailable: () -> Boolean = { true },
 ) {
     // attestation:none authenticators send an all-zero AAGUID
     private val aaguid = ByteArray(16)
@@ -121,12 +135,19 @@ class PasskeyAuthenticator(
         val credentials = req.allowCredentialIds?.let { ids ->
             store.list().filter { c -> ids.any { it.contentEquals(c.credentialId) } }
         } ?: store.list(req.rpId)
-        val credential = credentials.firstOrNull() ?: throw CtapError(CTAP_ERR_NO_CREDENTIALS)
+        val credential = when {
+            credentials.isEmpty() -> throw CtapError(CTAP_ERR_NO_CREDENTIALS)
+            credentials.size == 1 -> credentials.first()
+            // Multiple resident keys for the RP — ask the user which account.
+            else -> accountPicker(req.rpId, credentials)
+                ?: throw CtapError(CTAP_ERR_OPERATION_DENIED)
+        }
 
         // UV is required when the request asks for it or the credential was
         // created UV-bound — and a UV-bound key only signs through a
         // CryptoObject-authorized prompt, so the gate always passes the signer.
         val needUv = req.requireUserVerification || credential.uvBound
+        if (needUv && !uvAvailable()) throw UvUnavailableException()
         val signer = store.signerFor(credential.credentialId)
         if (needUv) {
             val ok = uvGate("Passkey", "Sign in", BiometricPrompt.CryptoObject(signer))

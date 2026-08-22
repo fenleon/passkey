@@ -28,4 +28,8 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     // implementation: only the core touches BiometricPrompt.
     implementation("androidx.biometric:biometric:1.1.0")
+    // Metadata codec round-trip + migration tests (pure JVM — no Android).
+    testImplementation(kotlin("test"))
+    // The real org.json (the android.jar stub isn't runnable on the JVM).
+    testImplementation("org.json:json:20240303")
 }

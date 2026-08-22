@@ -9,8 +9,19 @@ Very much a WIP - at this point the blocker is utilising the fingerprint, which 
 
 - caBLE v2 core (`:cable`), authenticator (`:core`), and the LightOS tool
   with the companion merged into one APK (`:app`/`:server`, toolbox-launched).
-- **Real-Chrome interop on the LP3 through the live relay
-- `:cable:run` (1178 asserts, incl. real-Chrome regression vectors);
+- **Real-Chrome interop on the LP3 through the live relay (2026-08-22):**
+  webauthn.io register ("Success! Now try to authenticate…") and login
+  ("You're logged in!") with UV (temporary lock PIN). The interop gate found
+  and fixed four wire bugs (see Protocol facts).
+- **Manager (2026-08-22, emulator-verified):** passkeys list screen (RP
+  domain, user name, created/last-used dates), tap-to-delete with a confirm
+  panel, `createdAt`/`lastUsedAt` timestamps (legacy rows read as 0), and an
+  account picker when a GetAssertion matches >1 credential for the RP
+  (session state `"pick"` + candidate names; `PickAccount(index)` resumes,
+  cancel → denied). Fixing the picker path also fixed a latent bug: an
+  absent GA allowList decoded as empty, so allow-less GAs always failed with
+  `CTAP_ERR_NO_CREDENTIALS` — now null = "match all resident keys".
+- `:cable:run` (1179 asserts, incl. real-Chrome regression vectors);
   DesktopClient ceremonies (40 checks, uv=false and uv=true); on-device LP3
   ceremonies (40 checks each, real BLE advert).
 
@@ -24,6 +35,10 @@ Very much a WIP - at this point the blocker is utilising the fingerprint, which 
   AOSP keyguard, breaking the LP3's zero-unlock wake flow (standby clock →
   tool button → toolbox). Pending a LightOS-native lock/enrollment path
   (Light's product decision).
+- A uv-required ceremony on a lockless device now fails honestly:
+  `isDeviceSecure` is checked before UV-bound keygen and before a UV-required
+  sign-in; the tool shows **"UV unavailable — no secure lock on this
+  device"** as the outcome instead of a raw Keystore failure.
 
 ## Modules
 
@@ -32,21 +47,29 @@ Very much a WIP - at this point the blocker is utilising the fingerprint, which 
   Crypter), `Ctap2` (MC/GA codec, authData/COSE parsers), tunnel transport
   (`TunnelServer`/`Ws`/`TunnelCheck`).
 - `:core` — the authenticator: `CredentialStore` (EC P-256 in Android
-  Keystore, resident-key metadata in app-private JSON), `UvGate`
-  (BiometricPrompt, injectable), `PasskeyAuthenticator` (WebAuthn JSON
-  `register`/`assert` plus raw `registerCtap`/`assertCtap` pieces for the
-  session).
+  Keystore, resident-key metadata in app-private JSON via the pure-JVM
+  `CredentialCodec`), `UvGate` (BiometricPrompt, injectable),
+  `PasskeyAuthenticator` (WebAuthn JSON `register`/`assert` plus raw
+  `registerCtap`/`assertCtap` pieces for the session; an injectable
+  `accountPicker` resolves multi-credential assertions).
 - `:app` — the LightOS tool (`PasskeyScreen`, `@InitialScreen`): scans the
   desktop's QR (`LightQrCodeScanner`), polls `GetSessionState` (~400 ms),
-  outcome titles ("Passkey created" / "Signed in" / "Couldn't sign in").
-  Debug auto-QR button for the emulator path — remove for release.
+  outcome titles ("Passkey created" / "Signed in" / "Couldn't sign in"),
+  the account-picker branch (`"pick"` state + candidate names, CANCEL),
+  an inline passkeys panel on the idle screen (top bar "Passkey" heading +
+  rows, SCAN in the bar), a top-left back button on the finished-session
+  outcome screen (returns to the panel) and `PasskeysDetailsScreen` (top bar
+  with the account name, name + site + created/last-used dates in the body,
+  bottom-bar REMOVE → `DeleteCredentialScreen` confirm). Debug auto-QR button
+  for the emulator path — remove for release.
 - `:server` — companion library merged into the tool APK (`serverPackage =
-  com.lightphone.passkey`): `SessionManager` (state machine),
+  com.lightphone.passkey`): `SessionManager` (state machine incl. the pending
+  pick: suspend the responder, `"pick"` state, `PickAccount(index)` resumes),
   `HybridSession` (tunnel → EID advert → KNpsk0 handshake → pushed getInfo →
   CTAP loop dispatching 0x01 MC / 0x02 GA), `UvPrompt`+`UvActivity` (the UV
   bridge), `PasskeyServiceMethods` (StartPasskeySession/StopSession/
-  GetSessionState), `ServerBootstrapProvider` + PlatformRelay (all keys
-  relayed to `com.lightos`).
+  GetSessionState/ListPasskeys/DeletePasskey/PickAccount),
+  `ServerBootstrapProvider` + PlatformRelay (all keys relayed to `com.lightos`).
 - `:rp` — local WebAuthn4J relying party (host-side).
 
 ## Build, install, verify
@@ -54,7 +77,7 @@ Very much a WIP - at this point the blocker is utilising the fingerprint, which 
 ```bash
 source ../tools/env.sh
 ../tools/build --dir passkey :app:assembleDebug        # build (use --force for tight RAM)
-./gradlew :cable:run                                   # self-check (1178 asserts)
+./gradlew :cable:run                                   # self-check (1179 asserts)
 ./gradlew :cable:tunnelCheck                           # live tunnel round-trip
 adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
 adb -s emulator-5554 shell am start -n com.lightphone.passkey/com.thelightphone.sdk.LightActivity
@@ -65,8 +88,12 @@ DesktopClient ceremony (vs the app): take the advert/tunnel-id/QR-key hex from
 logcat, then
 
 ```bash
-java -cp "$(./gradlew -q :cable:classpath)" com.lightphone.passkey.cable.DesktopClientKt <adv> <tid> <qrKey> [uv]
+java -cp "$(./gradlew -q :cable:classpath)" com.lightphone.passkey.cable.DesktopClientKt <adv> <tid> <qrKey> [uv] [multi] [userName]
 ```
+
+`multi` omits the GA allowList (matches every resident key for the RP — the
+account-picker path); the trailing `userName` names the registered credential
+(default "user"), so repeated runs can register several accounts for one RP.
 
 Run via `java -cp`, not gradle — startup eats the tunnel's ~30 s window.
 With `uv`, type the lock PIN into the BiometricPrompt twice (MC then GA).
@@ -100,7 +127,11 @@ With `uv`, type the lock PIN into the BiometricPrompt twice (MC then GA).
   3: user{id, name, displayName}, 4: [{alg, type}], 5: exclude[{id}],
   7: options{rk, uv}}` — **inner maps use TEXT keys**.
 - CTAP2 GetAssertion request: `{1: rpId, 2: clientDataHash, 3: allow[{id}],
-  5: options{uv}}` — allow entries use TEXT keys.
+  5: options{uv}}` — allow entries use TEXT keys. **An absent allowList
+  decodes as null (match every resident key for the RP)** — the account-picker
+  path; a present-but-empty list is a real "nothing allowed". (Before
+  2026-08-22 an absent allowList decoded as empty → allow-less GAs always
+  failed with `CTAP_ERR_NO_CREDENTIALS`.)
 - CTAP2 GetAssertion response: `{1: credential{id, type}, 2: authData,
   3: signature, 4: user{id, name, displayName}, 5: numberOfCredentials}` —
   credential and user entities use TEXT keys; the signature stays **DER**

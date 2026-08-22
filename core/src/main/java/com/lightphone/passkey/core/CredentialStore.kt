@@ -1,6 +1,7 @@
 package com.lightphone.passkey.core
 
 import android.content.Context
+import android.app.KeyguardManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
@@ -11,8 +12,6 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * One resident credential's metadata. The private key itself lives in the
@@ -26,7 +25,19 @@ data class Credential(
     val userHandle: ByteArray,
     val uvBound: Boolean,
     val signCount: Long,
+    /** Epoch millis of registration; 0 = legacy row (created before timestamps were stored). */
+    val createdAt: Long = 0,
+    /** Epoch millis of the last sign-in; 0 = never used. */
+    val lastUsedAt: Long = 0,
 )
+
+/**
+ * UV was required but the device has no secure lock — no Gatekeeper HAT can
+ * be minted, so neither a UV-bound key nor a UV-required sign-in can work.
+ * The session layer maps this to an honest status instead of a raw keygen
+ * failure.
+ */
+class UvUnavailableException : Exception("UV unavailable — no secure lock on this device")
 
 class CredentialStore(private val context: Context) {
 
@@ -35,6 +46,10 @@ class CredentialStore(private val context: Context) {
 
     private fun alias(credentialId: ByteArray) = "passkey:${Base64Url.encode(credentialId)}"
 
+    /** A secure lock exists (device credential or biometrics) — UV can work. */
+    fun isUvAvailable(): Boolean =
+        (context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceSecure
+
     /**
      * Creates an EC P-256 keypair in the Keystore. With [requireUv] the key is
      * bound to user verification (fingerprint OR device credential) for every
@@ -42,6 +57,7 @@ class CredentialStore(private val context: Context) {
      */
     @Synchronized
     fun createCredential(rpId: String, userName: String, userHandle: ByteArray, requireUv: Boolean): Credential {
+        if (requireUv && !isUvAvailable()) throw UvUnavailableException()
         val credId = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val spec = KeyGenParameterSpec.Builder(alias(credId), KeyProperties.PURPOSE_SIGN)
             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
@@ -59,7 +75,10 @@ class CredentialStore(private val context: Context) {
         KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
             .apply { initialize(spec) }
             .generateKeyPair()
-        val credential = Credential(credId, rpId, userName, userHandle, requireUv, 0)
+        val credential = Credential(
+            credId, rpId, userName, userHandle, requireUv, 0,
+            createdAt = System.currentTimeMillis(),
+        )
         save(load() + credential)
         return credential
     }
@@ -86,9 +105,23 @@ class CredentialStore(private val context: Context) {
 
     @Synchronized
     fun bumpCounter(credentialId: ByteArray) {
+        val now = System.currentTimeMillis()
         save(load().map {
-            if (it.credentialId.contentEquals(credentialId)) it.copy(signCount = it.signCount + 1) else it
+            if (it.credentialId.contentEquals(credentialId)) {
+                it.copy(signCount = it.signCount + 1, lastUsedAt = now)
+            } else {
+                it
+            }
         })
+    }
+
+    /** Removes the Keystore key + metadata row for [credentialId]; no-op when unknown. */
+    @Synchronized
+    fun delete(credentialId: ByteArray) {
+        val creds = load()
+        if (creds.none { it.credentialId.contentEquals(credentialId) }) return
+        ks.deleteEntry(alias(credentialId))
+        save(creds.filterNot { it.credentialId.contentEquals(credentialId) })
     }
 
     @Synchronized
@@ -97,41 +130,14 @@ class CredentialStore(private val context: Context) {
         file.delete()
     }
 
-    // ---- metadata persistence ----
+    // ---- metadata persistence (pure-JVM codec — see CredentialCodec) ----
 
     private fun load(): List<Credential> {
         if (!file.exists()) return emptyList()
-        val arr = JSONArray(file.readText())
-        return buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(
-                    Credential(
-                        credentialId = Base64Url.decode(o.getString("credentialId")),
-                        rpId = o.getString("rpId"),
-                        userName = o.getString("userName"),
-                        userHandle = Base64Url.decode(o.getString("userHandle")),
-                        uvBound = o.optBoolean("uvBound", false),
-                        signCount = o.getLong("signCount"),
-                    )
-                )
-            }
-        }
+        return CredentialCodec.decode(file.readText())
     }
 
     private fun save(creds: List<Credential>) {
-        val arr = JSONArray()
-        for (c in creds) {
-            arr.put(
-                JSONObject()
-                    .put("credentialId", Base64Url.encode(c.credentialId))
-                    .put("rpId", c.rpId)
-                    .put("userName", c.userName)
-                    .put("userHandle", Base64Url.encode(c.userHandle))
-                    .put("uvBound", c.uvBound)
-                    .put("signCount", c.signCount)
-            )
-        }
-        file.writeText(arr.toString())
+        file.writeText(CredentialCodec.encode(creds))
     }
 }

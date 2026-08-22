@@ -1,5 +1,6 @@
 package com.lightphone.passkey.server
 
+import com.lightphone.passkey.core.Base64Url
 import com.thelightphone.sdk.shared.LightResult
 import com.thelightphone.sdk.shared.LightServiceMethod
 
@@ -27,8 +28,40 @@ object PasskeyServiceMethods {
 
         LightServiceMethod.GetSessionState.id -> {
             val s = SessionManager.state.value
-            val response = LightServiceMethod.GetSessionState.Response(s.state, s.lines, s.summary)
+            val response = LightServiceMethod.GetSessionState.Response(
+                state = s.state,
+                lines = s.lines,
+                summary = s.summary,
+                candidates = s.candidates,
+            )
             LightResult.Success(LightServiceMethod.GetSessionState.encodeResponse(response))
+        }
+
+        LightServiceMethod.ListPasskeys.id -> {
+            val response = LightServiceMethod.ListPasskeys.Response(
+                SessionManager.listCredentials().map {
+                    LightServiceMethod.CredentialInfo(
+                        credentialId = com.lightphone.passkey.core.Base64Url.encode(it.credentialId),
+                        rpId = it.rpId,
+                        userName = it.userName,
+                        createdAt = it.createdAt,
+                        lastUsedAt = it.lastUsedAt,
+                    )
+                }
+            )
+            LightResult.Success(LightServiceMethod.ListPasskeys.encodeResponse(response))
+        }
+
+        LightServiceMethod.DeletePasskey.id -> {
+            val request = LightServiceMethod.DeletePasskey.decodeRequest(payload!!)
+            SessionManager.deleteCredential(request.credentialId)
+            LightResult.Success(LightServiceMethod.DeletePasskey.encodeResponse(Unit))
+        }
+
+        LightServiceMethod.PickAccount.id -> {
+            val request = LightServiceMethod.PickAccount.decodeRequest(payload!!)
+            SessionManager.pickAccount(request.index)
+            LightResult.Success(LightServiceMethod.PickAccount.encodeResponse(Unit))
         }
 
         else -> LightResult.Error(LightResult.ErrorCode.Unknown, "unknown method $methodId")

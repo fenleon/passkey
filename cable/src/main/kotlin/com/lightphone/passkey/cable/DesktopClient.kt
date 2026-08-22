@@ -27,7 +27,11 @@ import java.util.Base64
  * clientDataJSON, hash it, send MC, validate rpIdHash/flags/attStmt + COSE
  * key, send GA, verify the ECDSA signature over authData ‖ clientDataHash with
  * the registered key) → shutdown. With `uv` the phone gates both ceremonies
- * behind its UV prompt (lock-screen PIN or fingerprint).
+ * behind its UV prompt (lock-screen PIN or fingerprint). With `multi` the GA
+ * omits the allowList, so it matches every resident key for the RP — the path
+ * that triggers the tool's account picker when several passkeys exist. The
+ * optional trailing `userName` names the registered credential (default
+ * "user"), so repeated runs can register several accounts for one RP.
  */
 fun main(args: Array<String>) {
     var checks = 0
@@ -35,11 +39,13 @@ fun main(args: Array<String>) {
         checks++
         if (!cond) throw AssertionError("FAIL: $what")
     }
-    require(args.size in 3..4) { "usage: DesktopClient <advertHex> <tunnelIdHex> <qrKeyHex> [uv]" }
+    require(args.size in 3..6) { "usage: DesktopClient <advertHex> <tunnelIdHex> <qrKeyHex> [uv] [multi] [userName]" }
     val advert = args[0].toHexBytes()
     val tunnelId = args[1].toHexBytes()
     val qrKey = args[2].toHexBytes()
     val uv = args.getOrNull(3) == "uv"
+    val multi = args.getOrNull(4) == "multi"
+    val userName = args.getOrNull(5) ?: "user"
     require(advert.size == Eid.ADVERT_LEN && tunnelId.size == 16 && qrKey.size == 48) {
         "bad args: advert=${advert.size}B tunnel=${tunnelId.size}B qrKey=${qrKey.size}B"
     }
@@ -101,7 +107,7 @@ fun main(args: Array<String>) {
         mapOf<Any, Any?>(
             1L to mcClientDataHash,
             2L to mapOf<Any, Any?>("id" to "example.com", "name" to "Example"),
-            3L to mapOf<Any, Any?>("id" to byteArrayOf(0x01, 0x02, 0x03), "name" to "user"),
+            3L to mapOf<Any, Any?>("id" to byteArrayOf(0x01, 0x02, 0x03), "name" to userName),
             4L to listOf(mapOf<Any, Any?>("alg" to -7, "type" to "public-key")),
             7L to mapOf<Any, Any?>("uv" to uv),
         )
@@ -129,18 +135,19 @@ fun main(args: Array<String>) {
     val pubKey = ecPublicKey(x, y)
     println("MakeCredential OK — rpIdHash/flags/COSE key valid")
 
-    // 7. GetAssertion ceremony: allow the credential we just registered, then
-    // verify the ECDSA signature over authData ‖ clientDataHash.
+    // 7. GetAssertion ceremony: allow the credential we just registered (or
+    // all resident keys with `multi` — the account-picker path), then verify
+    // the ECDSA signature over authData ‖ clientDataHash.
     val gaChallenge = ByteArray(32) { (it * 5 + 2).toByte() }
     val gaClientData = """{"type":"webauthn.get","challenge":"${b64u(gaChallenge)}","origin":"https://example.com"}"""
     val gaClientDataHash = sha256(gaClientData.toByteArray())
     val gaReq = CableCbor.encode(
-        mapOf<Any, Any?>(
-            1L to "example.com",
-            2L to gaClientDataHash,
-            3L to listOf(mapOf<Any, Any?>("id" to regParsed2.credentialId!!, "type" to "public-key")),
-            5L to mapOf<Any, Any?>("uv" to uv),
-        )
+        buildMap {
+            put(1L, "example.com")
+            put(2L, gaClientDataHash)
+            if (!multi) put(3L, listOf(mapOf<Any, Any?>("id" to regParsed2.credentialId!!, "type" to "public-key")))
+            put(5L, mapOf<Any, Any?>("uv" to uv))
+        }
     )
     ws.sendBinary(crypter.encrypt(byteArrayOf(0x01, Ctap.CMD_GET_ASSERTION.toByte()) + gaReq))
     val gaReply = crypter.decrypt(ws.readBinary())
@@ -151,11 +158,17 @@ fun main(args: Array<String>) {
         "GA reply type kCTAP + status OK (0x00) + decodes as a map")
     val gaMap2 = gaMap!!
     val gaCred = gaMap2[1L] as? Map<*, *>
-    check(gaCred != null && (gaCred["id"] as? ByteArray)?.contentEquals(regParsed2.credentialId) == true &&
-        gaCred["type"] == "public-key", "GA credential id matches registered")
+    // With `multi` the phone may have picked any stored passkey (the tool's
+    // account picker); the signature check below still proves it was the key
+    // registered this run — the id is checked exactly only in single mode.
+    check(gaCred != null && gaCred["type"] == "public-key" &&
+        (multi || (gaCred["id"] as? ByteArray)?.contentEquals(regParsed2.credentialId) == true),
+        "GA credential id matches registered")
     val assertAuthData = gaMap2[2L] as? ByteArray
     val signature = gaMap2[3L] as? ByteArray
-    val userHandle = (gaMap2[4L] as? Map<*, *>)?.get(1L) as? ByteArray
+    // User entity is string-keyed {id: userHandle, name, displayName} since
+    // the Chrome interop fix — the handle is the "id" (WebAuthn user id).
+    val userHandle = (gaMap2[4L] as? Map<*, *>)?.get("id") as? ByteArray
     check(assertAuthData != null && signature != null, "GA authData + signature present")
     val gaParsed = Ctap2.parseAuthData(assertAuthData!!)
     check(gaParsed != null && gaParsed!!.rpIdHash.contentEquals(sha256("example.com".toByteArray())), "GA rpIdHash matches")

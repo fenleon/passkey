@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
@@ -38,7 +39,10 @@ import com.thelightphone.sdk.ui.LightTextVariant
 import com.thelightphone.sdk.ui.LightTheme
 import com.thelightphone.sdk.ui.LightThemeController
 import com.thelightphone.sdk.ui.LightThemeTokens
+import com.thelightphone.sdk.ui.LightTopBar
+import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
+import com.thelightphone.sdk.ui.lightClickable
 import java.security.SecureRandom
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -49,12 +53,22 @@ class PasskeyViewModel : LightViewModel<Unit>() {
 
     val session = MutableStateFlow<LightServiceMethod.GetSessionState.Response?>(null)
     val startError = MutableStateFlow<String?>(null)
+    val passkeys = MutableStateFlow<List<LightServiceMethod.CredentialInfo>>(emptyList())
 
     private var pollJob: Job? = null
 
     override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
         super.onScreenShow(screen)
+        loadPasskeys()
         poll()
+    }
+
+    /** The stored passkeys for the idle panel (newest first). */
+    fun loadPasskeys() {
+        viewModelScope.launch {
+            passkeys.value = callRemoteServiceMethod(LightServiceMethod.ListPasskeys, Unit)
+                .getOrNull()?.credentials ?: emptyList()
+        }
     }
 
     fun startSession(qrPayload: String) {
@@ -75,6 +89,14 @@ class PasskeyViewModel : LightViewModel<Unit>() {
     fun stop() {
         viewModelScope.launch {
             callRemoteServiceMethod(LightServiceMethod.StopSession, Unit)
+            poll()
+        }
+    }
+
+    /** Resolves a pending account pick; -1 cancels the sign-in (the server answers CTAP denied). */
+    fun pickAccount(index: Int) {
+        viewModelScope.launch {
+            callRemoteServiceMethod(LightServiceMethod.PickAccount, LightServiceMethod.PickAccount.Request(index))
             poll()
         }
     }
@@ -100,7 +122,14 @@ class PasskeyViewModel : LightViewModel<Unit>() {
                 val s = callRemoteServiceMethod(LightServiceMethod.GetSessionState, Unit).getOrNull()
                     ?: break
                 session.value = s
-                if (s.state != "running") break
+                // "pick" is a live state too — the account picker's outcome
+                // (PickAccount) is reported by a later poll, not here.
+                if (s.state != "running" && s.state != "pick") {
+                    // Terminal — refresh the idle passkeys panel (a ceremony
+                    // may have registered a new one).
+                    loadPasskeys()
+                    break
+                }
                 delay(POLL_MS)
             }
         }
@@ -130,12 +159,13 @@ class PasskeyScreen(sealedActivity: SealedLightActivity) : LightScreen<Unit, Pas
         var scanning by remember { mutableStateOf(false) }
         val session by viewModel.session.collectAsState()
         val startError by viewModel.startError.collectAsState()
+        val passkeys by viewModel.passkeys.collectAsState()
         val permissionLauncher = rememberPermissionRequestLauncher(Manifest.permission.CAMERA)
 
         LightTheme(colors = themeColors) {
             if (scanning) {
                 LightQrCodeScanner(
-                    title = "Scan passkey QR",
+                    title = "Scan Passkey QR",
                     onScanned = { value: String ->
                         scanning = false
                         viewModel.startSession(value)
@@ -153,9 +183,17 @@ class PasskeyScreen(sealedActivity: SealedLightActivity) : LightScreen<Unit, Pas
                 PasskeyContent(
                     session = session,
                     startError = startError,
+                    passkeys = passkeys,
                     onScan = { scanning = true },
                     onStop = viewModel::stop,
                     onAutoQr = viewModel::autoQr,
+                    onOpenPasskey = { credential ->
+                        navigateTo(screenFactory = { PasskeysDetailsScreen(it, credential) }) { deleted ->
+                            if (deleted == true) viewModel.loadPasskeys()
+                        }
+                    },
+                    onPick = viewModel::pickAccount,
+                    onBackToList = viewModel::stop,
                 )
             }
         }
@@ -166,21 +204,38 @@ class PasskeyScreen(sealedActivity: SealedLightActivity) : LightScreen<Unit, Pas
 private fun PasskeyContent(
     session: LightServiceMethod.GetSessionState.Response?,
     startError: String?,
+    passkeys: List<LightServiceMethod.CredentialInfo>,
     onScan: () -> Unit,
     onStop: () -> Unit,
     onAutoQr: () -> Unit,
+    onOpenPasskey: (LightServiceMethod.CredentialInfo) -> Unit,
+    onPick: (Int) -> Unit,
+    onBackToList: () -> Unit,
 ) {
     val state = session?.state ?: "idle"
     val lines = session?.lines ?: emptyList()
+    val candidates = session?.candidates ?: emptyList()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(LightThemeTokens.colors.background)
     ) {
-        // Top spacer of the side-gutter size (no-text top bar for this
-        // single-purpose tool — the SDK provides back navigation).
-        Spacer(Modifier.height(2f.gridUnitsAsDp()))
+        // The app heading lives in the top bar (like a normal tool header).
+        // A finished session keeps its back arrow here too (returns to the
+        // panel); all other states just show the centered title.
+        LightTopBar(
+            leftButton = if (state == "done" || state == "error") {
+                LightBarButton.LightIcon(
+                    icon = LightIcons.BACK,
+                    onClick = onBackToList,
+                    contentDescription = "Back to Passkeys",
+                )
+            } else {
+                null
+            },
+            center = LightTopBarCenter.Text(text = "Passkey"),
+        )
 
         Column(
             modifier = Modifier
@@ -197,19 +252,64 @@ private fun PasskeyContent(
                     LightText(
                         text = startError,
                         variant = LightTextVariant.Copy,
-                        lighten = true,
                     )
                 }
 
                 state == "idle" -> {
-                    // No title: the toolbox already labels the tool (Library
-                    // pattern — "the app name is redundant on a single-purpose
-                    // device").
+                    if (passkeys.isEmpty()) {
+                        LightText(
+                            text = "No passkeys yet.",
+                            variant = LightTextVariant.Copy,
+                        )
+                    } else {
+                        LightScrollView(modifier = Modifier.fillMaxSize()) {
+                            passkeys.forEach { credential ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .lightClickable { onOpenPasskey(credential) }
+                                        .padding(vertical = 1.2f.gridUnitsAsDp())
+                                ) {
+                                    LightText(
+                                        text = credential.userName,
+                                        variant = LightTextVariant.Copy,
+                                    )
+                                    LightText(
+                                        text = "(${credential.rpId})",
+                                        variant = LightTextVariant.Fine,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                state == "pick" -> {
+                    // A GetAssertion matched several passkeys for the same site
+                    // — pick the account to sign in as (the server suspends the
+                    // ceremony until PickAccount resolves it).
                     LightText(
-                        text = "Scan a passkey QR from your computer to sign in.",
-                        variant = LightTextVariant.Copy,
-                        lighten = true,
+                        text = "Sign in as",
+                        variant = LightTextVariant.Heading,
+                        modifier = Modifier.padding(bottom = 1f.gridUnitsAsDp()),
                     )
+                    candidates.forEachIndexed { index, name ->
+                        LightText(
+                            text = name,
+                            variant = LightTextVariant.Copy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .lightClickable { onPick(index) }
+                                .padding(vertical = 1.2f.gridUnitsAsDp()),
+                        )
+                    }
+                    if (candidates.isEmpty()) {
+                        LightText(
+                            text = "No accounts to choose from.",
+                            variant = LightTextVariant.Copy,
+                            lighten = true,
+                        )
+                    }
                 }
 
                 else -> {
@@ -217,6 +317,8 @@ private fun PasskeyContent(
                         text = when (state) {
                             "running" -> "Signing in…"
                             "done" -> session?.summary ?: "Done"
+                            // e.g. "UV unavailable — no secure lock on this device"
+                            "error" -> session?.summary ?: "Couldn't sign in"
                             else -> "Couldn't sign in"
                         },
                         variant = LightTextVariant.Heading,
@@ -239,19 +341,23 @@ private fun PasskeyContent(
         }
 
         // Bottom bar: the native 3-slot grammar — centered full-height text
-        // button for the primary command, right slot = debug auto-QR
-        // (dev-only, remove for a release), left slot empty.
+        // button for the primary command (SCAN / STOP / CANCEL), right slot =
+        // debug auto-QR (dev-only, remove for a release), left slot empty.
         LightBottomBar(
             items = listOf(
                 null,
-                if (state == "running") {
-                    LightBarButton.Text(
+                when (state) {
+                    "pick" -> LightBarButton.Text(
+                        text = "CANCEL",
+                        onClick = { onPick(-1) },
+                        contentDescription = "Cancel sign-in",
+                    )
+                    "running" -> LightBarButton.Text(
                         text = "STOP",
                         onClick = onStop,
                         contentDescription = "Stop session",
                     )
-                } else {
-                    LightBarButton.Text(
+                    else -> LightBarButton.Text(
                         text = "SCAN",
                         onClick = onScan,
                         contentDescription = "Scan passkey QR",

@@ -19,6 +19,7 @@ import com.lightphone.passkey.core.AssertCtapRequest
 import com.lightphone.passkey.core.CtapError
 import com.lightphone.passkey.core.PasskeyAuthenticator
 import com.lightphone.passkey.core.RegisterCtapRequest
+import com.lightphone.passkey.core.UvUnavailableException
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -201,6 +202,9 @@ class HybridSession(
             )
             sendCtap(ws, Ctap2.encodeMakeCredentialResponse(res.credentialId, res.authData))
             log("MakeCredential OK — cred ${res.credentialId.toHex().take(8)}…")
+        } catch (e: UvUnavailableException) {
+            log("FAIL: ${e.message}")
+            sendCtapError(ws, Ctap.ERR_OPERATION_DENIED)
         } catch (e: CtapError) {
             log("MakeCredential rejected: 0x%02x".format(e.status))
             sendCtapError(ws, e.status)
@@ -229,6 +233,9 @@ class HybridSession(
             log("GA resp hex: ${response.toHex()}")
             sendCtap(ws, response)
             log("GetAssertion OK — cred ${res.credentialId.toHex().take(8)}… uv=${res.uv}")
+        } catch (e: UvUnavailableException) {
+            log("FAIL: ${e.message}")
+            sendCtapError(ws, Ctap.ERR_OPERATION_DENIED)
         } catch (e: CtapError) {
             log("GetAssertion rejected: 0x%02x".format(e.status))
             sendCtapError(ws, e.status)

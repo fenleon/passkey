@@ -275,8 +275,12 @@ fun main() {
     )
     check(ga != null && ga!!.rpId == "example.com" && ga.clientDataHash.contentEquals(cdh), "GA decodes")
     val ga2 = ga!!
-    check(ga2.allowCredentialIds.single().contentEquals(byteArrayOf(4, 5, 6)), "GA allow list")
+    check(ga2.allowCredentialIds!!.single().contentEquals(byteArrayOf(4, 5, 6)), "GA allow list")
     check(ga2.requireUserVerification, "GA uv defaults true")
+    check(Ctap2.decodeGetAssertion(
+        CableCbor.encode(mapOf<Any, Any?>(1L to "example.com", 2L to cdh))
+    )!!.allowCredentialIds == null,
+        "GA absent allowList decodes null (all resident keys — picker path)")
     check(Ctap2.decodeGetAssertion(CableCbor.encode(mapOf<Any, Any?>(1L to "x", 2L to ByteArray(31)))) == null,
         "GA rejects short clientDataHash")
 
