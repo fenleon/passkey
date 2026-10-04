@@ -1,5 +1,10 @@
 # Passkey — a WebAuthn authenticator core for the Light Phone 3, in Kotlin. (LightOS tool, caBLE hybrid)
 
+<p align="center"><a href="https://ko-fi.com/fenleon">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="art/coffee-hand-filled-alpha-white-steam.png"><img src="art/coffee-hand-filled-alpha-white.png" alt="Hand holding Coffee" height="50" style="vertical-align: middle;"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="art/buy-me-a-coffee-alpha-white.png"><img src="art/buy-me-a-coffee-alpha-black.png" alt="Buy Me A Coffee" height="40" style="vertical-align: middle;"></picture>
+  <img src="art/ok-hand-filled-alpha-white.png" alt="OK Hand" height="50" style="vertical-align: middle;"></a></p>
+
 Very much a WIP - at this point the blocker is utilising the fingerprint, which requires a working PIN code, neither of which the LP3 currently supports.
 
 
@@ -177,3 +182,5 @@ With `uv`, type the lock PIN into the BiometricPrompt twice (MC then GA).
 - On the LP3: never `locksettings set-pin` without a cleanup plan — any secure
   credential activates the AOSP keyguard over the wake flow. Cleanup:
   `locksettings clear --old <pin>` + `wm dismiss-keyguard`.
+
+<p align="center">Support my work by leaving me a <a href="https://ko-fi.com/fenleon">tip</a> or <a href="https://github.com/sponsors/fenleon">sponsoring me</a>. A little goes a long way.</p>
